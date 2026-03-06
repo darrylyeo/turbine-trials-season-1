@@ -181,7 +181,7 @@ class TurbineClient:
         if chain_id is not None:
             params["chain_id"] = chain_id
 
-        response = self._http.get(ENDPOINTS["markets"], params=params or None)
+        response = self._http.get(ENDPOINTS["markets"], params=params or None, authenticated=True)
         markets = response.get("markets", []) if isinstance(response, dict) else response
         return [Market.from_dict(m) for m in markets]
 
@@ -195,7 +195,7 @@ class TurbineClient:
             The market stats.
         """
         endpoint = ENDPOINTS["stats"].format(market_id=market_id)
-        response = self._http.get(endpoint)
+        response = self._http.get(endpoint, authenticated=True)
         return MarketStats.from_dict(response)
 
     def get_orderbook(
@@ -284,7 +284,7 @@ class TurbineClient:
             The active quick market.
         """
         endpoint = ENDPOINTS["quick_market"].format(asset=asset)
-        response = self._http.get(endpoint)
+        response = self._http.get(endpoint, authenticated=True)
         # API returns {"quickMarket": {...}} nested structure
         quick_market_data = response.get("quickMarket", response)
         return QuickMarket.from_dict(quick_market_data)
@@ -301,7 +301,7 @@ class TurbineClient:
         """
         endpoint = ENDPOINTS["quick_market_history"].format(asset=asset)
         params = {"limit": limit}
-        response = self._http.get(endpoint, params=params)
+        response = self._http.get(endpoint, params=params, authenticated=True)
         markets = response.get("markets", []) if isinstance(response, dict) else response
         return [QuickMarket.from_dict(m) for m in markets]
 
@@ -315,7 +315,7 @@ class TurbineClient:
             The current asset price.
         """
         endpoint = ENDPOINTS["quick_market_price"].format(asset=asset)
-        response = self._http.get(endpoint)
+        response = self._http.get(endpoint, authenticated=True)
         return AssetPrice.from_dict(response)
 
     def get_quick_market_price_history(
@@ -332,7 +332,7 @@ class TurbineClient:
         """
         endpoint = ENDPOINTS["quick_market_price_history"].format(asset=asset)
         params = {"limit": limit}
-        response = self._http.get(endpoint, params=params)
+        response = self._http.get(endpoint, params=params, authenticated=True)
         prices = response if isinstance(response, list) else response.get("prices", [])
         return [AssetPrice.from_dict(p) for p in prices]
 
@@ -1265,7 +1265,7 @@ class TurbineClient:
 
         endpoint = f"/api/v1/users/{owner}/balances"
         params = {"chain_id": str(self._chain_id), "spender": spender}
-        response = self._http.get(endpoint, params=params)
+        response = self._http.get(endpoint, params=params, authenticated=True)
         return int(response.get("allowance", "0"))
 
     def get_usdc_balance(self, owner: Optional[str] = None) -> int:
@@ -1285,7 +1285,7 @@ class TurbineClient:
 
         endpoint = f"/api/v1/users/{owner}/balances"
         params = {"chain_id": str(self._chain_id)}
-        response = self._http.get(endpoint, params=params)
+        response = self._http.get(endpoint, params=params, authenticated=True)
         return int(response.get("balance", "0"))
 
     def sign_usdc_permit(

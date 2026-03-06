@@ -625,12 +625,13 @@ class PriceActionBot:
 
     async def get_active_market(self, asset: str) -> tuple[str, int, int] | None:
         """Get the currently active quick market for an asset."""
-        response = self.client._http.get(f"/api/v1/quick-markets/{asset}")
-        quick_market_data = response.get("quickMarket")
-        if not quick_market_data:
+        try:
+            qm = self.client.get_quick_market(asset)
+            if not qm.market_id:
+                return None
+            return qm.market_id, qm.end_time, qm.start_price
+        except Exception:
             return None
-        quick_market = QuickMarket.from_dict(quick_market_data)
-        return quick_market.market_id, quick_market.end_time, quick_market.start_price
 
     async def cancel_all_orders(self) -> None:
         """Cancel all open orders by querying the API."""
