@@ -12,4 +12,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["dotenvx", "run", "--", "python", "main.py"]
+# If .env exists (e.g. committed encrypted), use dotenvx to decrypt and run. Else use Railway Variables only.
+CMD ["sh", "-c", "if [ -f .env ]; then exec dotenvx run -- python main.py; else exec python main.py; fi"]

@@ -47,12 +47,21 @@ load_dotenvx()
 # ============================================================
 # CONFIGURATION - Adjust these parameters for your strategy
 # ============================================================
+def _env(key: str, default: str = "") -> str:
+	v = os.environ.get(key, default)
+	if isinstance(v, str) and v.startswith("encrypted:"):
+		raise ValueError(
+			f"Env {key} is still encrypted. On Railway: use plain values in Variables, "
+			"or commit an encrypted .env and set only DOTENV_PRIVATE_KEY."
+		)
+	return v or default
+
 # Claim-only mode: Set CLAIM_ONLY_MODE=true in .env to disable trading
-CLAIM_ONLY_MODE = os.environ.get("CLAIM_ONLY_MODE", "false").lower() == "true"
+CLAIM_ONLY_MODE = _env("CLAIM_ONLY_MODE", "false").lower() == "true"
 # Chain ID: Set CHAIN_ID in .env (default: 84532 for Base Sepolia)
-CHAIN_ID = int(os.environ.get("CHAIN_ID", "84532"))
+CHAIN_ID = int(_env("CHAIN_ID", "84532"))
 # API Host: Set TURBINE_HOST in .env (default: localhost for testing)
-TURBINE_HOST = os.environ.get("TURBINE_HOST", "http://localhost:8080")
+TURBINE_HOST = _env("TURBINE_HOST", "http://localhost:8080")
 
 # Default trading parameters (in USDC terms)
 DEFAULT_ORDER_SIZE_USDC = 1.0  # $1 USDC per order
@@ -83,14 +92,14 @@ def get_or_create_api_credentials(env_path: Path = None):
     if env_path is None:
         env_path = Path(__file__).parent / ".env"
 
-    api_key_id = os.environ.get("TURBINE_API_KEY_ID")
-    api_private_key = os.environ.get("TURBINE_API_PRIVATE_KEY")
+    api_key_id = _env("TURBINE_API_KEY_ID", "")
+    api_private_key = _env("TURBINE_API_PRIVATE_KEY", "")
 
     if api_key_id and api_private_key:
         print("Using existing API credentials")
         return api_key_id, api_private_key
 
-    private_key = os.environ.get("TURBINE_PRIVATE_KEY")
+    private_key = _env("TURBINE_PRIVATE_KEY", "")
     if not private_key:
         raise ValueError("Set TURBINE_PRIVATE_KEY in your .env file")
 
@@ -129,7 +138,7 @@ def _save_credentials_to_env(env_path: Path, api_key_id: str, api_private_key: s
             content = content.rstrip() + f"\nTURBINE_API_PRIVATE_KEY={api_private_key}"
         env_path.write_text(content + "\n")
     else:
-        content = f"# Turbine Bot Config\nTURBINE_PRIVATE_KEY={os.environ.get('TURBINE_PRIVATE_KEY', '')}\nTURBINE_API_KEY_ID={api_key_id}\nTURBINE_API_PRIVATE_KEY={api_private_key}\n"
+        content = f"# Turbine Bot Config\nTURBINE_PRIVATE_KEY={_env('TURBINE_PRIVATE_KEY', '')}\nTURBINE_API_KEY_ID={api_key_id}\nTURBINE_API_PRIVATE_KEY={api_private_key}\n"
         env_path.write_text(content)
 
 
@@ -863,7 +872,7 @@ async def main():
             print(f"Error: Unsupported asset '{asset}'. Supported: {', '.join(SUPPORTED_ASSETS)}")
             return
 
-    private_key = os.environ.get("TURBINE_PRIVATE_KEY")
+    private_key = _env("TURBINE_PRIVATE_KEY", "")
     if not private_key:
         print("Error: Set TURBINE_PRIVATE_KEY in your .env file")
         return
