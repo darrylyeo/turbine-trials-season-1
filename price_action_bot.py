@@ -64,9 +64,9 @@ CHAIN_ID = int(_env("CHAIN_ID", "84532"))
 TURBINE_HOST = _env("TURBINE_HOST", "http://localhost:8080")
 
 # Default trading parameters (in USDC terms)
-DEFAULT_ORDER_SIZE_USDC = 1.0  # $1 USDC per order
-DEFAULT_MAX_POSITION_USDC = 5.0  # $5 max position per asset per market
-PRICE_POLL_SECONDS = 5  # How often to check prices
+DEFAULT_ORDER_SIZE_USDC = 0.25  # $0.25 USDC per order (small size to survive with limited balance)
+DEFAULT_MAX_POSITION_USDC = 2.0  # $2 max position per asset per market
+PRICE_POLL_SECONDS = 10  # How often to check prices
 
 # Price Action parameters
 PRICE_THRESHOLD_BPS = 5  # 0.05% threshold before taking action
@@ -185,6 +185,10 @@ class PriceActionBot:
 
         # Track approved settlement contracts (shared across assets)
         self.approved_settlements: dict[str, int] = {}  # settlement_address -> approved_amount
+
+        # Throttle noisy log messages (asset -> last_time)
+        self._last_low_balance_log: dict[str, float] = {}
+        self._last_hold_log: dict[str, float] = {}
 
         # Async HTTP client for non-blocking price fetches
         self._http_client: httpx.AsyncClient | None = None
@@ -448,16 +452,18 @@ class PriceActionBot:
             print(f"[{state.asset}] Order too small: ${self.order_size_usdc:.2f} at {price/10000:.1f}%")
             return
 
-        # Check USDC balance before trading
+        # Check USDC balance before trading (throttle log to once per 60s per asset)
         try:
             usdc_balance = self.client.get_usdc_balance()
             balance_usdc = usdc_balance / 1_000_000
             if balance_usdc < self.order_size_usdc:
-                print(f"[{state.asset}] Insufficient USDC balance: ${balance_usdc:.2f} < ${self.order_size_usdc:.2f} order size")
-                print(f"   Fund wallet: {self.client.address}")
+                now = time.time()
+                if now - self._last_low_balance_log.get(state.asset, 0) > 60:
+                    self._last_low_balance_log[state.asset] = now
+                    print(f"[{state.asset}] Insufficient USDC: ${balance_usdc:.2f} < ${self.order_size_usdc:.2f} | Fund: {self.client.address}")
                 return
         except Exception:
-            pass  # Don't block trading if balance check fails
+            pass
 
         if state.settlement_address:
             try:
@@ -612,11 +618,14 @@ class PriceActionBot:
                     if action != "HOLD":
                         await self.execute_signal(state, action, confidence)
                     else:
-                        strike_usd = state.strike_price / 1e6
-                        if strike_usd > 0:
-                            diff_pct = ((current_price - strike_usd) / strike_usd) * 100
-                            pos = self.get_position_usdc(state, state.market_id)
-                            print(f"[{asset}] ${current_price:,.2f} ({diff_pct:+.2f}% from ${strike_usd:,.2f}) | Pos: ${pos:.2f}/${self.max_position_usdc:.2f} - HOLD")
+                        now = time.time()
+                        if now - self._last_hold_log.get(asset, 0) > 30:
+                            self._last_hold_log[asset] = now
+                            strike_usd = state.strike_price / 1e6
+                            if strike_usd > 0:
+                                diff_pct = ((current_price - strike_usd) / strike_usd) * 100
+                                pos = self.get_position_usdc(state, state.market_id)
+                                print(f"[{asset}] ${current_price:,.2f} ({diff_pct:+.2f}% from ${strike_usd:,.2f}) | Pos: ${pos:.2f}/${self.max_position_usdc:.2f} - HOLD")
 
                 await asyncio.sleep(PRICE_POLL_SECONDS)
             except Exception as e:
@@ -817,11 +826,14 @@ class PriceActionBot:
                     if "no winning tokens" in str(e).lower():
                         for market_id, _, state in resolved:
                             del state.traded_markets[market_id]
+                    else:
+                        print(f"Claim error: {e}")
                 except Exception as e:
                     print(f"Batch claim error: {e}")
 
             except Exception as e:
-                print(f"Claim monitor error: {e}")
+                if "no winning tokens" not in str(e).lower():
+                    print(f"Claim monitor error: {e}")
 
             await asyncio.sleep(retry_delay)
 

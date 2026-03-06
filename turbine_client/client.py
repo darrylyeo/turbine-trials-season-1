@@ -1635,12 +1635,10 @@ class TurbineClient:
             market_address = m["market_address"]
 
             if not m["resolved"]:
-                print(f"Skipping {market_address}: not resolved")
                 continue
 
             balance = int(m["winning_balance"])
             if balance == 0:
-                print(f"Skipping {market_address}: no winning tokens")
                 continue
 
             ctf_address = m["ctf_address"]

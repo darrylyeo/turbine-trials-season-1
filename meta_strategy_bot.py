@@ -52,9 +52,14 @@ class MetaStrategyBot(PriceActionBot):
 			"price_history": self.price_history,
 		}
 		fn = STRATEGIES[self.current_strategy_id]
-		return await fn(state, current_price, context)
+		action, confidence = await fn(state, current_price, context)
+		if action != "HOLD":
+			print(f"[META] strategy={self.current_strategy_id} | {state.asset} -> {action} (conf: {confidence:.0%})")
+		return action, confidence
 
 	async def execute_signal(self, state: AssetState, action: str, confidence: float) -> None:
+		if action != "HOLD":
+			print(f"[META] strategy={self.current_strategy_id} | {state.asset} executing {action}")
 		if self.dry_run and action != "HOLD" and confidence >= 0.6:
 			price = self.confidence_to_price(action, confidence)
 			shares = self.calculate_shares_from_usdc(self.order_size_usdc, price)
@@ -66,7 +71,7 @@ class MetaStrategyBot(PriceActionBot):
 	async def switch_to_new_market(self, state: AssetState, new_market_id: str, start_price: int = 0) -> None:
 		self.current_strategy_id = self.selector.choose()
 		self.market_to_strategy[new_market_id] = self.current_strategy_id
-		print(f"[META] Strategy for {state.asset}: {self.current_strategy_id}")
+		print(f"[META] strategy={self.current_strategy_id} | {state.asset} selected for new market {new_market_id[:8]}...")
 		await super().switch_to_new_market(state, new_market_id, start_price)
 
 	async def claim_resolved_markets(self) -> None:
@@ -101,18 +106,19 @@ class MetaStrategyBot(PriceActionBot):
 						strategy_id = self.market_to_strategy.pop(market_id, None)
 						if strategy_id:
 							self.selector.record(strategy_id, 1.0)
-				except ValueError as e:
-					if "no winning tokens" in str(e).lower():
-						for market_id, _, state in resolved:
-							del state.traded_markets[market_id]
-							strategy_id = self.market_to_strategy.pop(market_id, None)
-							if strategy_id:
-								self.selector.record(strategy_id, 0.0)
-					else:
-						raise
-				except Exception as e:
-					print(f"Batch claim error: {e}")
+			except ValueError as e:
+				if "no winning tokens" in str(e).lower():
+					for market_id, _, state in resolved:
+						del state.traded_markets[market_id]
+						strategy_id = self.market_to_strategy.pop(market_id, None)
+						if strategy_id:
+							self.selector.record(strategy_id, 0.0)
+				else:
+					print(f"Claim error: {e}")
 			except Exception as e:
+				print(f"Batch claim error: {e}")
+		except Exception as e:
+			if "no winning tokens" not in str(e).lower():
 				print(f"Claim monitor error: {e}")
 			await asyncio.sleep(retry_delay)
 
@@ -162,6 +168,7 @@ async def main():
 	print(f"{'='*60}")
 	print(f"Wallet: {client.address}")
 	print(f"Chain: {CHAIN_ID}")
+	print(f"Order: ${args.order_size:.2f} | Max pos: ${args.max_position:.2f}")
 	print(f"Strategies: {', '.join(STRATEGY_IDS)}")
 	print(f"Prior PnL (rolling): {scores}")
 	print(f"Next strategy: {bot.selector.choose()}")
