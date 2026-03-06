@@ -106,20 +106,20 @@ class MetaStrategyBot(PriceActionBot):
 						strategy_id = self.market_to_strategy.pop(market_id, None)
 						if strategy_id:
 							self.selector.record(strategy_id, 1.0)
-			except ValueError as e:
-				if "no winning tokens" in str(e).lower():
-					for market_id, _, state in resolved:
-						del state.traded_markets[market_id]
-						strategy_id = self.market_to_strategy.pop(market_id, None)
-						if strategy_id:
-							self.selector.record(strategy_id, 0.0)
-				else:
-					print(f"Claim error: {e}")
+				except ValueError as e:
+					if "no winning tokens" in str(e).lower():
+						for market_id, _, state in resolved:
+							del state.traded_markets[market_id]
+							strategy_id = self.market_to_strategy.pop(market_id, None)
+							if strategy_id:
+								self.selector.record(strategy_id, 0.0)
+					else:
+						print(f"Claim error: {e}")
+				except Exception as e:
+					print(f"Batch claim error: {e}")
 			except Exception as e:
-				print(f"Batch claim error: {e}")
-		except Exception as e:
-			if "no winning tokens" not in str(e).lower():
-				print(f"Claim monitor error: {e}")
+				if "no winning tokens" not in str(e).lower():
+					print(f"Claim monitor error: {e}")
 			await asyncio.sleep(retry_delay)
 
 

@@ -63,9 +63,9 @@ CHAIN_ID = int(_env("CHAIN_ID", "84532"))
 # API Host: Set TURBINE_HOST in .env (default: localhost for testing)
 TURBINE_HOST = _env("TURBINE_HOST", "http://localhost:8080")
 
-# Default trading parameters (in USDC terms)
-DEFAULT_ORDER_SIZE_USDC = 0.25  # $0.25 USDC per order (small size to survive with limited balance)
-DEFAULT_MAX_POSITION_USDC = 2.0  # $2 max position per asset per market
+# Default trading parameters (in USDC terms) — tuned for ~$1 total balance
+DEFAULT_ORDER_SIZE_USDC = 0.25  # $0.25 per order
+DEFAULT_MAX_POSITION_USDC = 0.50  # $0.50 max per asset (so 2 positions ≈ $1 total)
 PRICE_POLL_SECONDS = 10  # How often to check prices
 
 # Price Action parameters
