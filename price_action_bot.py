@@ -258,8 +258,8 @@ class PriceActionBot:
                     pass
                 time.sleep(2)
             else:
-                print(f"⚠ Approval pending (may still confirm)")
-                self.approved_settlements[settlement_address] = 2**256 - 1
+                print(f"⚠ Approval not confirmed yet — will retry before next order")
+                raise RuntimeError("USDC permit not confirmed; retry or check relayer")
 
         except Exception as e:
             print(f"✗ Gasless approval failed: {e}")
@@ -458,6 +458,13 @@ class PriceActionBot:
                 return
         except Exception:
             pass  # Don't block trading if balance check fails
+
+        if state.settlement_address:
+            try:
+                self.ensure_settlement_approved(state.settlement_address)
+            except Exception as e:
+                print(f"[{state.asset}] Skipping order: approval not ready — {e}")
+                return
 
         try:
             # Create order without per-trade permit (using max permit allowance)
@@ -705,7 +712,7 @@ class PriceActionBot:
         state.processed_trade_ids.clear()
         state.pending_order_txs.clear()
 
-        # Fetch settlement and contract addresses
+        # Fetch settlement and contract addresses (required for approval and orders)
         try:
             markets = self.client.get_markets()
             for market in markets:
@@ -717,6 +724,16 @@ class PriceActionBot:
                     except Exception:
                         pass
                     break
+            if not state.settlement_address:
+                for m in self.client.get_markets(chain_id=self.client._chain_id):
+                    if m.id == new_market_id:
+                        state.settlement_address = m.settlement_address
+                        if not state.contract_address:
+                            try:
+                                state.contract_address = self.client.get_market(new_market_id).contract_address
+                            except Exception:
+                                pass
+                        break
         except Exception as e:
             print(f"[{state.asset}] Warning: Could not fetch market addresses: {e}")
 
