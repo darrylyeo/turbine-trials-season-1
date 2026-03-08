@@ -63,10 +63,11 @@ CHAIN_ID = int(_env("CHAIN_ID", "84532"))
 # API Host: Set TURBINE_HOST in .env (default: localhost for testing)
 TURBINE_HOST = _env("TURBINE_HOST", "http://localhost:8080")
 
-# Default trading parameters (in USDC terms) — tuned for ~$1 total balance
-DEFAULT_ORDER_SIZE_USDC = 0.25  # $0.25 per order
-DEFAULT_MAX_POSITION_USDC = 0.50  # $0.50 max per asset (so 2 positions ≈ $1 total)
+# Default trading parameters (in USDC terms) — API minimum order is $1; tuned for ~$3 balance
+DEFAULT_ORDER_SIZE_USDC = 1.0  # $1 per order (API minimum)
+DEFAULT_MAX_POSITION_USDC = 2.0  # $2 max per asset (so up to 3 orders across assets with $3)
 PRICE_POLL_SECONDS = 10  # How often to check prices
+ORDER_ATTEMPT_COOLDOWN_SECONDS = 30  # Skip same (asset, action) within this window to avoid duplicate orders
 
 # Price Action parameters
 PRICE_THRESHOLD_BPS = 5  # 0.05% threshold before taking action
@@ -189,6 +190,10 @@ class PriceActionBot:
         # Throttle noisy log messages (asset -> last_time)
         self._last_low_balance_log: dict[str, float] = {}
         self._last_hold_log: dict[str, float] = {}
+
+        # Duplicate-action guard: one in-flight order attempt per asset, cooldown per (asset, action)
+        self._order_locks: dict[str, asyncio.Lock] = {a: asyncio.Lock() for a in assets}
+        self._last_order_attempt: dict[str, tuple[float, str]] = {}  # asset -> (timestamp, action)
 
         # Async HTTP client for non-blocking price fetches
         self._http_client: httpx.AsyncClient | None = None
@@ -434,74 +439,81 @@ class PriceActionBot:
         if action == "HOLD" or confidence < MIN_CONFIDENCE:
             return
 
-        # Check position limits (in USDC)
-        if not self.can_trade(state, self.order_size_usdc):
-            current = self.get_position_usdc(state, state.market_id)
-            print(f"[{state.asset}] Position limit reached: ${current:.2f} / ${self.max_position_usdc:.2f}")
-            return
-
-        outcome = Outcome.YES if action == "BUY_YES" else Outcome.NO
-
-        # Calculate our limit price from the signal confidence
-        price = self.confidence_to_price(action, confidence)
-        print(f"[{state.asset}] Posting resting bid at {price / 10000:.1f}% (conf: {confidence:.0%})")
-
-        # Calculate shares from USDC amount
-        shares = self.calculate_shares_from_usdc(self.order_size_usdc, price)
-        if shares <= 0:
-            print(f"[{state.asset}] Order too small: ${self.order_size_usdc:.2f} at {price/10000:.1f}%")
-            return
-
-        # Check USDC balance before trading (throttle log to once per 60s per asset)
-        try:
-            usdc_balance = self.client.get_usdc_balance()
-            balance_usdc = usdc_balance / 1_000_000
-            if balance_usdc < self.order_size_usdc:
-                now = time.time()
-                if now - self._last_low_balance_log.get(state.asset, 0) > 60:
-                    self._last_low_balance_log[state.asset] = now
-                    print(f"[{state.asset}] Insufficient USDC: ${balance_usdc:.2f} < ${self.order_size_usdc:.2f} | Fund: {self.client.address}")
+        async with self._order_locks[state.asset]:
+            now = time.time()
+            last_ts, last_action = self._last_order_attempt.get(state.asset, (0, ""))
+            if (now - last_ts) < ORDER_ATTEMPT_COOLDOWN_SECONDS and last_action == action:
                 return
-        except Exception:
-            pass
 
-        if state.settlement_address:
+            # Check position limits (in USDC)
+            if not self.can_trade(state, self.order_size_usdc):
+                current = self.get_position_usdc(state, state.market_id)
+                print(f"[{state.asset}] Position limit reached: ${current:.2f} / ${self.max_position_usdc:.2f}")
+                return
+
+            outcome = Outcome.YES if action == "BUY_YES" else Outcome.NO
+
+            # Calculate our limit price from the signal confidence
+            price = self.confidence_to_price(action, confidence)
+            print(f"[{state.asset}] Posting resting bid at {price / 10000:.1f}% (conf: {confidence:.0%})")
+
+            # Calculate shares from USDC amount
+            shares = self.calculate_shares_from_usdc(self.order_size_usdc, price)
+            if shares <= 0:
+                print(f"[{state.asset}] Order too small: ${self.order_size_usdc:.2f} at {price/10000:.1f}%")
+                return
+
+            # Check USDC balance before trading (throttle log to once per 60s per asset)
             try:
-                self.ensure_settlement_approved(state.settlement_address)
+                usdc_balance = self.client.get_usdc_balance()
+                balance_usdc = usdc_balance / 1_000_000
+                if balance_usdc < self.order_size_usdc:
+                    now = time.time()
+                    if now - self._last_low_balance_log.get(state.asset, 0) > 60:
+                        self._last_low_balance_log[state.asset] = now
+                        print(f"[{state.asset}] Insufficient USDC: ${balance_usdc:.2f} < ${self.order_size_usdc:.2f} | Fund: {self.client.address}")
+                    return
+            except Exception:
+                pass
+
+            if state.settlement_address:
+                try:
+                    self.ensure_settlement_approved(state.settlement_address)
+                except Exception as e:
+                    print(f"[{state.asset}] Skipping order: approval not ready — {e}")
+                    return
+
+            self._last_order_attempt[state.asset] = (time.time(), action)
+            try:
+                # Create order without per-trade permit (using max permit allowance)
+                order = self.client.create_limit_buy(
+                    market_id=state.market_id,
+                    outcome=outcome,
+                    price=price,
+                    size=shares,
+                    expiration=int(time.time()) + 600,  # 10 min — stays on book most of market life
+                    settlement_address=state.settlement_address,
+                )
+
+                result = self.client.post_order(order)
+                outcome_str = "YES" if outcome == Outcome.YES else "NO"
+
+                if result and isinstance(result, dict):
+                    status = result.get("status", "unknown")
+                    order_hash = result.get("orderHash", order.order_hash)
+
+                    print(f"[{state.asset}] -> Order submitted: {outcome_str} @ {price / 10000:.1f}% | ${self.order_size_usdc:.2f} = {shares/1_000_000:.4f} shares (status: {status})")
+
+                    # Verify order status in background (don't block next order)
+                    asyncio.create_task(self._verify_order(state, order_hash, action, shares))
+
+                else:
+                    print(f"[{state.asset}] Unexpected order response: {result}")
+
+            except TurbineApiError as e:
+                print(f"[{state.asset}] Order failed: {e}")
             except Exception as e:
-                print(f"[{state.asset}] Skipping order: approval not ready — {e}")
-                return
-
-        try:
-            # Create order without per-trade permit (using max permit allowance)
-            order = self.client.create_limit_buy(
-                market_id=state.market_id,
-                outcome=outcome,
-                price=price,
-                size=shares,
-                expiration=int(time.time()) + 600,  # 10 min — stays on book most of market life
-                settlement_address=state.settlement_address,
-            )
-
-            result = self.client.post_order(order)
-            outcome_str = "YES" if outcome == Outcome.YES else "NO"
-
-            if result and isinstance(result, dict):
-                status = result.get("status", "unknown")
-                order_hash = result.get("orderHash", order.order_hash)
-
-                print(f"[{state.asset}] -> Order submitted: {outcome_str} @ {price / 10000:.1f}% | ${self.order_size_usdc:.2f} = {shares/1_000_000:.4f} shares (status: {status})")
-
-                # Verify order status in background (don't block next order)
-                asyncio.create_task(self._verify_order(state, order_hash, action, shares))
-
-            else:
-                print(f"[{state.asset}] Unexpected order response: {result}")
-
-        except TurbineApiError as e:
-            print(f"[{state.asset}] Order failed: {e}")
-        except Exception as e:
-            print(f"[{state.asset}] Unexpected error: {e}")
+                print(f"[{state.asset}] Unexpected error: {e}")
 
     async def _verify_order(self, state: AssetState, order_hash: str, action: str, shares: int) -> None:
         """Background task to check order status after submission."""
